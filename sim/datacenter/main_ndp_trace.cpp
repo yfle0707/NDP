@@ -18,9 +18,9 @@
 #include "firstfit.h"
 #include "topology.h"
 //#include "fat_tree_topology.h"
-#include "leafspine_topology.h"
+//#include "leafspine_topology.h"
 
-// #include "rack_scale_topology.h"
+#include "rack_scale_topology.h"
 #include "ndp_pairs.h"
 
 // Simulation params
@@ -31,7 +31,7 @@
 #include "main.h"
 
 //int RTT = 10; // this is per link delay; identical RTT microseconds = 0.02 ms
-uint32_t RTT = 1; // this is per link delay in us; also check the topology file, where it interprets this value. identical RTT microseconds = 0.02 ms
+uint32_t RTT = 10; // this is per link delay in us; identical RTT microseconds = 0.02 ms
 //double RTT = .2; // this is per link delay in us; identical RTT microseconds = 0.012 ms
 #define DEFAULT_NODES 128
 #define DEFAULT_QUEUE_SIZE 8
@@ -41,7 +41,7 @@ unsigned int subflow_count = 1;
 
 string ntoa(double n);
 string itoa(uint64_t n);
-vector<pair<uint64_t, double> >* mesgSizeDistFromFile(
+vector<pair<uint64_t, double>>* mesgSizeDistFromFile(
     string filename, double& lambda);
 
 //#define SWITCH_BUFFER (SERVICE * RTT / 1000)
@@ -60,18 +60,16 @@ void exit_error(char* progr) {
 uint16_t loadFactor = 65; // load factor in percent
 
 int main(int argc, char **argv) {
-    Packet::set_packet_size(9000);
-    eventlist.setEndtime(timeFromSec(4.0));
+    Packet::set_packet_size(1500);
+    eventlist.setEndtime(timeFromSec(40.0));
     Clock c(timeFromSec(5 / 100.), eventlist);
     uint32_t no_of_conns = DEFAULT_NODES, cwnd = 15, no_of_nodes = DEFAULT_NODES;
     mem_b queuesize = memFromPkt(DEFAULT_QUEUE_SIZE);
     stringstream filename(ios_base::out);
     RouteStrategy route_strategy = NOT_SET;
     stringstream distfile(ios_base::out);
-    stringstream flowfile(ios_base::out);
 
-
-	int is_incast = 0;
+	int is_incast = 1;
     int i = 1,seed = 1;
     filename << "logout.dat";
     distfile << "";
@@ -84,9 +82,6 @@ int main(int argc, char **argv) {
 	} else if (!strcmp(argv[i], "-dist")) {
 	    distfile.str(std::string());
 	    distfile << argv[i+1];
-	    i++;
-    } else if (!strcmp(argv[i], "-flow")) {
-	    flowfile << argv[i+1];
 	    i++;
     } else if (!strcmp(argv[i],"-seed")){
 	    seed = atoi(argv[i+1]);
@@ -129,9 +124,9 @@ int main(int argc, char **argv) {
 	exit(1);
     }
 
-    if (!strcmp(distfile.str().c_str(), "") && !strcmp(flowfile.str().c_str(), "") ) {
-        fprintf(stderr, "Message size distribution file is not set and flow file is not set"
-            " Use -dist or -flow to specify the filename ");
+    if (!strcmp(distfile.str().c_str(), "")) {
+        fprintf(stderr, "Message size distribution file is not set."
+            " Use -dist to specify the filename");
 	    exit(1);
     }
 
@@ -190,11 +185,11 @@ int main(int argc, char **argv) {
 
 
 #ifdef LEAF_SPINE_H
-    int srvrsPerTor = 32; //16
-    int torsPerPod = 16;  //9
+    int srvrsPerTor = 16;
+    int torsPerPod = 9;
     int numPods = 1;
     LeafSpineTopology* top = new LeafSpineTopology(srvrsPerTor, torsPerPod,
-        numPods, queuesize, &logfile, &eventlist, ff, COMPOSITE);
+        numPods, queuesize, &logfile, &eventlist, ff, queue_type::COMPOSITE);
     cout << "topology created" << endl;
     no_of_nodes = top->no_of_nodes();
 #endif
@@ -230,9 +225,9 @@ int main(int argc, char **argv) {
     logfile.write("# rtt =" + ntoa(rtt));
 
     double lambda;
-
+    vector<pair<uint64_t, double>>* wl =
+        mesgSizeDistFromFile(distfile.str(), lambda);
     vector<NdpLoadGen*> loadGens;
-    vector<NdpReadTrace*> ReadTraces;
     vector<NdpRecvrAggr*> recvrAggrs;
     vector<NdpPullPacer*> pacers;
     for (size_t node = 0; node < no_of_nodes; node++) {
@@ -240,30 +235,15 @@ int main(int argc, char **argv) {
         recvrAggrs.push_back(new NdpRecvrAggr(eventlist, node, pacers.back()));
     }
 	size_t node = 0;
+	if(is_incast == 1){
+		node = 1;	
+	}else{
+		node = 0;	
+	}
 
-
-    if (strcmp(flowfile.str().c_str(), ""))
-    {
-        for (; node < no_of_nodes; node++)
-        {
-            ReadTraces.push_back(new NdpReadTrace(eventlist, node, &recvrAggrs, top, cwnd,
-                                                  &logfile, &ndpRtxScanner, net_paths, flowfile.str()));
-        }
-    }
-    else
-    {
-        if(is_incast == 1){
-            node = 1;	
-        }else{
-            node = 0;	
-        }        
-        vector<pair<uint64_t, double> > *wl =
-            mesgSizeDistFromFile(distfile.str(), lambda);
-        for (; node < no_of_nodes; node++)
-        {
-            loadGens.push_back(new NdpLoadGen(eventlist, node, &recvrAggrs, top, lambda, cwnd,
-                                              wl, &logfile, &ndpRtxScanner, net_paths, is_incast));
-        }
+    for (; node < no_of_nodes; node++) {
+        loadGens.push_back(new NdpLoadGen(eventlist, node, &recvrAggrs, top, lambda, cwnd,
+            wl, &logfile, &ndpRtxScanner, net_paths, is_incast));
     }
 
     // GO!
@@ -354,10 +334,10 @@ string itoa(uint64_t n) {
     return s.str();
 }
 
-vector<pair<uint64_t, double> >*
+vector<pair<uint64_t, double>>*
 mesgSizeDistFromFile(string filename, double& lambda)
 {
-    auto* wl = new vector<pair<uint64_t, double> >();
+    auto* wl = new vector<pair<uint64_t, double>>();
     ifstream distFileStream;
     distFileStream.open(filename.c_str());
     std::string avgMsgSizeStr;
